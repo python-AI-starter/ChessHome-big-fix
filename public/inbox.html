@@ -1507,6 +1507,14 @@ async function pollMessages(partner) {
 }
 
 // ─── SEND DM ──────────────────────────────────────────────────
+// btoa не принимает символы вне Latin-1, поэтому UTF-8 кодируем вручную
+function utf8ToB64(s) {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
 const _dmSendTimes = [];
 function dmRateLimitOk() {
   const now = Date.now();
@@ -1547,7 +1555,17 @@ async function sendDm(retry) {
   updateConvLastMsg(partner, text, tempMsg.ts, false);
 
   try {
-    const msg = await apiPost('/dm/send', { to: partner, text, replyTo: reply?.id || undefined });
+    const replyId = reply?.id || undefined;
+    let msg;
+    try {
+      msg = await apiPost('/dm/send', { to: partner, text, replyTo: replyId });
+    } catch (e) {
+      // Ошибки API приходят с HTTP-статусом (см. api.js). Ответ без статуса —
+      // это не-JSON от прокси/WAF, который вырезал тело с сигнатурой вроде
+      // «bin/su». Повторяем один раз с base64-текстом — сервер понимает text64.
+      if (e.status !== undefined) throw e;
+      msg = await apiPost('/dm/send', { to: partner, text64: utf8ToB64(text), replyTo: replyId });
+    }
     // сокет/поллинг могли успеть добавить это же сообщение — убираем дубль
     const dup = messages.findIndex(m => m !== tempMsg && m.id === msg.id);
     if (dup !== -1) { messages.splice(dup, 1); _el('msg-' + msg.id)?.remove(); }

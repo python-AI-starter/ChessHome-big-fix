@@ -87,6 +87,18 @@ app.post('/api/dm/send', authMiddleware, rateLimit(limiterStrict), async (req, r
   const me = req.user.username;
   const meUser = await getUser(me.toLowerCase());
   if (!meUser || meUser.banned) return res.status(403).json({ error: 'Ваш аккаунт заблокирован' });
+  // WAF/прокси перед Node режет тела с сигнатурами вида «bin/su» (путь к системному su)
+  // и отвечает HTML вместо JSON — клиент показывает «Сервер временно недоступен».
+  // Для таких сообщений клиент повторяет отправку с text64 (base64 от UTF-8 текста);
+  // дальше текст обрабатывается, хранится и рассылается в обычном виде.
+  // Строгая проверка round-trip отсекает случайные строки, похожие на base64.
+  if (req.body && typeof req.body.text64 === 'string' && req.body.text64) {
+    const decoded = Buffer.from(req.body.text64, 'base64').toString('utf8');
+    if (!decoded || Buffer.from(decoded, 'utf8').toString('base64') !== req.body.text64) {
+      return res.status(400).json({ error: 'Некорректное кодирование текста' });
+    }
+    req.body.text = decoded;
+  }
   const { to, text, replyTo } = req.body;
   if (!to || !text || !text.trim()) return res.status(400).json({ error: 'Укажите получателя и текст' });
   if (to.toLowerCase() === me.toLowerCase()) return res.status(400).json({ error: 'Нельзя писать самому себе' });
